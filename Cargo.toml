@@ -3,6 +3,8 @@ name = "vec-option"
 version = "0.1.0"
 authors = ["Ozaren <krishna.sd.2012@gmail.com>"]
 edition = "2018"
+description = 'A space optimized version of `Vec<Option<T>>` that stores the discriminant seperately'
+license = 'MIT'
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
