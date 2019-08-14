@@ -1,6 +1,6 @@
 [package]
 name = "vec-option"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ozaren <krishna.sd.2012@gmail.com>"]
 edition = "2018"
 description = 'A space optimized version of `Vec<Option<T>>` that stores the discriminant seperately'

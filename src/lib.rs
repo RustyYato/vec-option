@@ -1,5 +1,12 @@
 #![cfg_attr(feature = "nightly", feature(specialization, try_trait))]
 #![allow(clippy::option_option)]
+#![forbid(missing_docs)]
+
+//! 
+//! # `vec-option`
+//! 
+//! 
+//! 
 
 use bit_vec::BitVec;
 
@@ -87,6 +94,20 @@ unsafe fn ref_from_raw_parts<T>(flag: bool, data: &MaybeUninit<T>) -> Option<&T>
     }
 }
 
+/// A space optimized version of `Vec<Option<T>>` that stores the discriminant seperately
+/// 
+/// # Pros
+/// 
+/// * Can have a smaller memory footprint compared to `Vec<Option<T>>` if `Option<T>`'s space optimizations don't take effect
+/// * Quickly set the entire collection to contain `None`
+/// * Fast extend with `None`
+/// 
+/// # Cons
+/// 
+/// * 2 allocations, instead of a single allocation
+/// * Cannot remove elements from the middle of the vector
+/// * Cannot work on the option's directly
+/// 
 pub struct VecOption<T> {
     data: Vec<MaybeUninit<T>>,
     flag: BitVec,
@@ -99,6 +120,7 @@ impl<T> Default for VecOption<T> {
 }
 
 impl<T> VecOption<T> {
+    /// Creates an empty vector, does not allocate
     pub fn new() -> Self {
         Self {
             data: Vec::new(),
@@ -106,6 +128,9 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// Creates an empty vector
+    /// 
+    /// allocates at least `cap` elements of space
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             data: Vec::with_capacity(cap),
@@ -113,6 +138,35 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// reserves at least `amount` elements
+    /// 
+    /// if there is already enough space, this does nothing
+    pub fn reserve(&mut self, amount: usize) {
+        self.data.reserve(amount);
+        self.flag.reserve(amount);
+    }
+
+    /// reserves exactly `amount` elements
+    /// 
+    /// if there is already enough space, this does nothing
+    pub fn reserve_exact(&mut self, amount: usize) {
+        self.data.reserve_exact(amount);
+        self.flag.reserve_exact(amount);
+    }
+
+    /// The length of this vector
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+    
+    /// Is this vector empty
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+    
+    /// Put a value at the end of the vector
+    /// 
+    /// Reallocates if there is not enough space
     pub fn push<V: Into<Option<T>>>(&mut self, value: V) {
         let value = value.into();
 
@@ -128,24 +182,9 @@ impl<T> VecOption<T> {
         }
     }
 
-    pub fn reserve(&mut self, amount: usize) {
-        self.data.reserve(amount);
-        self.flag.reserve(amount);
-    }
-
-    pub fn reserve_exact(&mut self, amount: usize) {
-        self.data.reserve_exact(amount);
-        self.flag.reserve_exact(amount);
-    }
-
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
+    /// Remove the last element of the vector
+    /// 
+    /// returns `None` if the vector is empty
     pub fn pop(&mut self) -> Option<Option<T>> {
         unsafe {
             let flag = self.flag.pop()?;
@@ -160,6 +199,7 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// Returns a mutable reference to the element at `index` or None if out of bounds.
     pub fn get_mut(&mut self, index: usize) -> Option<Option<&mut T>> {
         unsafe {
             let flag = self.flag.get(index)?;
@@ -174,6 +214,7 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// Returns a reference to the element at `index` or None if out of bounds.
     pub fn get(&self, index: usize) -> Option<Option<&T>> {
         unsafe {
             let flag = self.flag.get(index)?;
@@ -188,6 +229,36 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// Yields a mutable reference to the `Option` to the closure, and updates the value in the vector
+    /// once the closure completes, if the closure panics, the element will be in the `None` state
+    pub fn with_mut<F: FnOnce(&mut Option<T>) -> R, R>(&mut self, index: usize, f: F) -> Option<R> {
+        unsafe {
+            let flag = self.flag.get(index)?;
+            
+            // index was checked with flag
+            let data_slot = self.data.get_unchecked_mut(index);
+
+            self.flag.set(index, false);
+
+            let data = std::mem::replace(data_slot, MaybeUninit::uninit());
+
+            // flag and data are a pair (same index)
+            let mut opt = from_raw_parts(flag, data);
+
+            let ret = f(&mut opt);
+
+            if let Some(value) = opt {
+                // data_slot is valid and contains uninitialized memory
+                // so do not drop it, but it is valid to write to
+                data_slot.as_mut_ptr().write(value);
+                self.flag.set(index, true);
+            }
+
+            Some(ret)
+        }
+    }
+
+    /// Swaps two elements of the vector, panics if either index is out of bounds
     pub fn swap(&mut self, a: usize, b: usize) {
         self.data.swap(a, b);
         unsafe {
@@ -201,16 +272,18 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// Returns the element at `index` or None if out of bounds.
+    /// 
+    /// Replaces the element at `index` with None.
     pub fn take(&mut self, index: usize) -> Option<Option<T>> {
         self.replace(index, None)
     }
 
-    pub fn put(&mut self, index: usize, value: T) -> Option<Option<T>> {
-        self.replace(index, Some(value))
-    }
-
-    pub fn replace(&mut self, index: usize, value: Option<T>) -> Option<Option<T>> {
+    /// Replace the element at `index` with `value`
+    pub fn replace<O: Into<Option<T>>>(&mut self, index: usize, value: O) -> Option<Option<T>> {
         unsafe {
+            let value = value.into();
+
             let flag = self.flag.get(index)?;
 
             // index was checked by flag.get
@@ -238,21 +311,9 @@ impl<T> VecOption<T> {
         }
     }
 
-    pub fn extend_none(&mut self, additional: usize) {
-        self.flag.grow(additional, false);
-
-        unsafe {
-            self.reserve(additional);
-
-            let len = self.len();
-
-            // Because this is a Vec<MaybeUninit<T>>, we only need to
-            // guarantee that we have enough space in the allocatation
-            // for `set_len` to be safe, and that was done with the reserve
-            self.data.set_len(len + additional);
-        }
-    }
-
+    /// Reduces the length of the vector to `len` and drops all excess elements
+    /// 
+    /// If `len` is greater than the length of the vector, nothing happens
     pub fn truncate(&mut self, len: usize) {
         if self.data.len() <= len {
             return;
@@ -279,10 +340,45 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// Clears the vector
     pub fn clear(&mut self) {
         self.truncate(0)
     }
 
+    /// Sets all of the elements in the vector to `None` and drops
+    /// all values in the closure
+    pub fn set_all_none(&mut self) {
+        if std::mem::needs_drop::<T>() {
+            for (i, data) in self.data.iter_mut().enumerate() {
+                unsafe {
+                    if self.flag.get_unchecked(i) {
+                        self.flag.set(i, false);
+                        data.as_mut_ptr().drop_in_place()
+                    }
+                }
+            }
+        } else {
+            self.flag.clear()
+        }
+    }
+
+    /// Extends the vector with `additional` number of `None`s
+    pub fn extend_none(&mut self, additional: usize) {
+        self.flag.grow(additional, false);
+
+        unsafe {
+            self.reserve(additional);
+
+            let len = self.len();
+
+            // Because this is a Vec<MaybeUninit<T>>, we only need to
+            // guarantee that we have enough space in the allocatation
+            // for `set_len` to be safe, and that was done with the reserve
+            self.data.set_len(len + additional);
+        }
+    }
+    
+    /// returns an iterator over references to the elements in the vector
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             data: self.data.iter(),
@@ -290,6 +386,7 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// returns an iterator over mutable references to the elements in the vector
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             data: self.data.iter_mut(),
@@ -297,6 +394,10 @@ impl<T> VecOption<T> {
         }
     }
 
+    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
+    /// the closure short-circuits, then iteration ends
+    /// 
+    /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
     #[cfg(feature = "nightly")]
     pub fn try_fold<A, R: std::ops::Try<Ok = A>, F: FnMut(A, usize, &mut Option<T>) -> R>(&mut self, mut init: A, mut f: F) -> R {
         for (i, data_slot) in self.data.iter_mut().enumerate() {
@@ -322,7 +423,13 @@ impl<T> VecOption<T> {
 
         R::from_ok(init)
     }
-
+    
+    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
+    /// the closure returns `Err(..)`, then iteration ends
+    /// 
+    /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
+    /// 
+    /// This is similar to `Iterator::try_fold`
     #[cfg(not(feature = "nightly"))]
     pub fn try_fold<A, B, F: FnMut(A, usize, &mut Option<T>) -> Result<A, B>>(&mut self, mut init: A, mut f: F) -> Result<A, B> {
         for (i, data_slot) in self.data.iter_mut().enumerate() {
@@ -349,6 +456,11 @@ impl<T> VecOption<T> {
         Ok(init)
     }
 
+    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one
+    /// 
+    /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
+    /// 
+    /// This is similar to `Iterator::fold`
     pub fn fold<A, F: FnMut(A, usize, &mut Option<T>) -> A>(&mut self, init: A, mut f: F) -> A {
         let ret = self.try_fold(init, move |a, i, x| Ok::<_, std::convert::Infallible>(f(a, i, x)));
 
@@ -358,33 +470,35 @@ impl<T> VecOption<T> {
         }
     }
     
+    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
+    /// the closure short-circuits, then iteration ends
+    /// 
+    /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
+    /// 
+    /// This is similar to `Iterator::try_for_each`
     #[cfg(feature = "nightly")]
     pub fn try_for_each<R: std::ops::Try<Ok = ()>, F: FnMut(usize, &mut Option<T>) -> R>(&mut self, mut f: F) -> R {
         self.try_fold((), move |(), i, x| f(i, x))
     }
 
+    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
+    /// the closure returns `Err(..)`, then iteration ends
+    /// 
+    /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
+    /// 
+    /// This is similar to `Iterator::try_for_each`
     #[cfg(not(feature = "nightly"))]
     pub fn try_for_each<B, F: FnMut(usize, &mut Option<T>) -> Result<(), B>>(&mut self, mut f: F) -> Result<(), B> {
         self.try_fold((), move |(), i, x| f(i, x))
     }
 
+    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one
+    /// 
+    /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
+    /// 
+    /// This is similar to `Iterator::for_each`
     pub fn for_each<F: FnMut(usize, &mut Option<T>)>(&mut self, mut f: F) {
         self.fold((), move |(), i, x| f(i, x))
-    }
-
-    pub fn set_all_none(&mut self) {
-        if std::mem::needs_drop::<T>() {
-            for (i, data) in self.data.iter_mut().enumerate() {
-                unsafe {
-                    if self.flag.get_unchecked(i) {
-                        self.flag.set(i, false);
-                        data.as_mut_ptr().drop_in_place()
-                    }
-                }
-            }
-        } else {
-            self.flag.clear()
-        }
     }
 }
 
@@ -535,6 +649,7 @@ impl<T> Drop for IntoIter<T> {
     }
 }
 
+/// This struct is created by the `into_iter` method on `VecOption` (provided by the `IntoIterator` trait).
 pub struct IntoIter<T> {
     data: std::vec::IntoIter<MaybeUninit<T>>,
     flag: bit_vec::IntoIter,
@@ -603,6 +718,7 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 impl<T> ExactSizeIterator for IntoIter<T> {}
 impl<T> std::iter::FusedIterator for IntoIter<T> {}
 
+/// This struct is created by the `iter_mut` method on `VecOption`
 pub struct IterMut<'a, T> {
     data: std::slice::IterMut<'a, MaybeUninit<T>>,
     flag: bit_vec::Iter<'a>,
@@ -654,6 +770,7 @@ impl<T> DoubleEndedIterator for IterMut<'_, T> {
     }
 }
 
+/// This struct is created by the `iter` method on `VecOption`
 pub struct Iter<'a, T> {
     data: std::slice::Iter<'a, MaybeUninit<T>>,
     flag: bit_vec::Iter<'a>,
@@ -804,7 +921,7 @@ fn test() {
     assert_eq!(vec, vec.clone());
 
     assert_eq!(vec.take(1), Some(Some(30)));
-    assert_eq!(vec.put(1, 40), Some(None));
+    assert_eq!(vec.replace(1, 40), Some(None));
     assert_eq!(vec.take(1), Some(Some(40)));
     vec.swap(0, 1);
     assert_eq!(vec, [None, Some(10), Some(20)]);
