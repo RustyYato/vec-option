@@ -1,4 +1,4 @@
-#![cfg_attr(feature = "nightly", feature(specialization, try_trait))]
+#![cfg_attr(feature = "nightly", feature(specialization, try_trait, slice_from_raw_parts, const_fn))]
 #![allow(clippy::option_option)]
 #![forbid(missing_docs)]
 
@@ -135,7 +135,6 @@ assert_eq!(vec, [None, None, None, None, None, None, None, None, None, None]);
 */
 
 mod bit_vec;
-// use bit_vec as bit_vec;
 
 use bit_vec::BitVec;
 
@@ -943,7 +942,7 @@ impl<T> std::iter::FusedIterator for IntoIter<T> {}
 /// This struct is created by the `iter_mut` method on `VecOption`
 pub struct IterMut<'a, T> {
     data: std::slice::IterMut<'a, MaybeUninit<T>>,
-    flag: bit_vec::IterMut<'a>,
+    flag: bit_vec::slice::IterMut<'a>,
 }
 
 impl<'a, T> Iterator for IterMut<'a, T> {
@@ -996,7 +995,7 @@ impl<T> DoubleEndedIterator for IterMut<'_, T> {
 /// This struct is created by the `iter` method on `VecOption`
 pub struct Iter<'a, T> {
     data: std::slice::Iter<'a, MaybeUninit<T>>,
-    flag: bit_vec::Iter<'a>,
+    flag: bit_vec::slice::Iter<'a>,
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {

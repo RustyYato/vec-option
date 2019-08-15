@@ -3,6 +3,23 @@
 use std::cell::Cell;
 use std::ops::{Deref, DerefMut};
 
+pub mod slice;
+
+fn index_to_slot(index: usize) -> (usize, u8) {
+    let slot = index >> 3;
+    let offset = (index & 0b0111) as u8;
+
+    (slot, offset)
+}
+
+fn set_bit(slot: &mut u8, offset: u8, value: bool) {
+    *slot = (*slot & !(1 << offset)) | ((value as u8) << offset);
+}
+
+fn get_bit(slot: u8, offset: u8) -> bool {
+    (slot & (1 << offset)) != 0
+}
+
 #[derive(Default, Clone)]
 pub struct BitVec {
     data: Vec<u8>,
@@ -14,21 +31,6 @@ pub struct AllocInfo {
     pub len: usize,
     pub cap: usize,
     _priv: (),
-}
-
-#[cfg(not(feature = "nightly"))]
-trait CellExt<T: ?Sized> {
-    fn from_mut(mut_ref: &mut T) -> &Self;
-}
-
-#[cfg(not(feature = "nightly"))]
-impl<T: ?Sized> CellExt<T> for Cell<T> {
-    fn from_mut(mut_ref: &mut T) -> &Self {
-        unsafe {
-            #[allow(clippy::transmute_ptr_to_ptr)]
-            std::mem::transmute::<&mut T, &Self>(mut_ref)
-        }
-    }
 }
 
 pub struct BitProxy<'a> {
@@ -60,7 +62,7 @@ impl Drop for BitProxy<'_> {
 impl BitProxy<'_> {
     pub fn flush(&self) {
         let mut value = self.slot.get();
-        BitVec::set_bit(&mut value, self.offset, self.value);
+        set_bit(&mut value, self.offset, self.value);
         self.slot.set(value);
     }
 }
@@ -101,23 +103,8 @@ impl BitVec {
         self.data.reserve_exact((additional >> 3) + 1);
     }
 
-    fn index_to_slot(index: usize) -> (usize, u8) {
-        let slot = index >> 3;
-        let offset = (index & 0b0111) as u8;
-
-        (slot, offset)
-    }
-
-    fn set_bit(slot: &mut u8, offset: u8, value: bool) {
-        *slot = (*slot & !(1 << offset)) | ((value as u8) << offset);
-    }
-
-    fn get_bit(slot: u8, offset: u8) -> bool {
-        (slot & (1 << offset)) != 0
-    }
-
     pub fn push(&mut self, value: bool) -> BitProxy<'_> {
-        let (slot, offset) = Self::index_to_slot(self.len);
+        let (slot, offset) = index_to_slot(self.len);
 
         self.len += 1;
 
@@ -127,7 +114,7 @@ impl BitVec {
 
         let slot = unsafe { self.data.get_unchecked_mut(slot) };
 
-        Self::set_bit(slot, offset, value);
+        set_bit(slot, offset, value);
 
         BitProxy {
             slot: Cell::from_mut(slot),
@@ -139,48 +126,25 @@ impl BitVec {
     pub fn pop(&mut self) -> Option<bool> {
         self.len = self.len.checked_sub(1)?;
 
-        let (slot, offset) = Self::index_to_slot(self.len);
+        let (slot, offset) = index_to_slot(self.len);
 
-        unsafe { Some(Self::get_bit(*self.data.get_unchecked(slot), offset)) }
+        unsafe { Some(get_bit(*self.data.get_unchecked(slot), offset)) }
     }
 
-    pub fn get(&self, index: usize) -> Option<bool> {
-        if index < self.len {
-            unsafe {
-                Some(self.get_unchecked(index))
-            }
-        } else {
-            None
-        }
+    pub fn get<'a, S: slice::SliceIndex<slice::BitSlice<'a>>>(&'a self, index: S) -> Option<S::Output> {
+        self.as_slice().get(index)
     }
 
-    pub unsafe fn get_unchecked(&self, index: usize) -> bool {
-        let (slot, offset) = Self::index_to_slot(index);
-
-        Self::get_bit(*self.data.get_unchecked(slot), offset)
+    pub unsafe fn get_unchecked<'a, S: slice::SliceIndex<slice::BitSlice<'a>>>(&'a self, index: S) -> S::Output {
+        self.as_slice().get_unchecked(index)
     }
 
-    pub fn get_mut(&mut self, index: usize) -> Option<BitProxy<'_>> {
-        if index < self.len {
-            unsafe {
-                Some(self.get_unchecked_mut(index))
-            }
-        } else {
-            None
-        }
+    pub fn get_mut<'a, S: slice::SliceIndexMut<slice::BitSliceMut<'a>>>(&'a mut self, index: S) -> Option<S::Output> {
+        self.as_mut_slice().into_get_mut(index)
     }
 
-    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> BitProxy<'_> {
-        let (slot, offset) = Self::index_to_slot(index);
-
-        let slot = self.data.get_unchecked_mut(slot);
-        let value = Self::get_bit(*slot, offset);
-
-        BitProxy {
-            slot: Cell::from_mut(slot),
-            offset,
-            value,
-        }
+    pub unsafe fn get_unchecked_mut<'a, S: slice::SliceIndexMut<slice::BitSliceMut<'a>>>(&'a mut self, index: S) -> S::Output {
+        self.as_mut_slice().into_get_unchecked_mut(index)
     }
 
     pub unsafe fn set_len(&mut self, len: usize) {
@@ -188,15 +152,7 @@ impl BitVec {
     }
 
     pub fn set(&mut self, index: usize, value: bool) {
-        if index < self.len {
-            let (slot, offset) = Self::index_to_slot(index);
-
-            unsafe {
-                Self::set_bit(self.data.get_unchecked_mut(slot), offset, value);
-            }
-        } else {
-            debug_assert!(false, "out of bounds!");
-        }
+        self.as_mut_slice().set(index, value);
     }
 
     pub fn grow(&mut self, additional: usize, value: bool) {
@@ -207,13 +163,13 @@ impl BitVec {
 
         self.data.resize(((self.len + additional) >> 3) + 1, 0);
 
-        let (slot, offset) = Self::index_to_slot(self.len);
+        let (slot, offset) = index_to_slot(self.len);
 
         {
             let slot = unsafe { self.data.get_unchecked_mut(slot) };
 
             for offset in offset..8 {
-                Self::set_bit(slot, offset, value);
+                set_bit(slot, offset, value);
             }
         }
 
@@ -246,184 +202,15 @@ impl BitVec {
         }
     }
 
-    pub fn iter(&self) -> Iter<'_> {
-        Iter {
-            vec: self,
-            start: 0,
-            end: self.len,
-        }
+    pub fn iter(&self) -> slice::Iter<'_> {
+        self.as_slice().iter()
     }
 
-    pub fn iter_mut(&mut self) -> IterMut<'_> {
-        IterMut {
-            inner: IterBytes {
-                bytes: self.data.iter_mut(),
-                last_len: (self.len & 0b0111) as u8,
-            }
-            .flatten(),
-        }
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_> {
+        self.as_mut_slice().iter_mut()
     }
 }
 
-pub struct Iter<'a> {
-    vec: &'a BitVec,
-    start: usize,
-    end: usize,
-}
-
-impl Iterator for Iter<'_> {
-    type Item = bool;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.start < self.end {
-            let ret = self.vec.get(self.start)?;
-
-            self.start = self.start.saturating_add(1);
-
-            Some(ret)
-        } else {
-            None
-        }
-    }
-
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        self.start = self.start.saturating_add(n);
-
-        self.next()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let size = self.end - self.start;
-
-        (size, Some(size))
-    }
-}
-
-impl DoubleEndedIterator for Iter<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.start < self.end {
-            self.end = self.end.saturating_sub(1);
-
-            self.vec.get(self.end)
-        } else {
-            None
-        }
-    }
-
-    #[cfg(feature = "nightly")]
-    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-        self.end = self.end.saturating_sub(n);
-
-        self.next_back()
-    }
-}
-
-impl ExactSizeIterator for Iter<'_> {}
-impl std::iter::FusedIterator for Iter<'_> {}
-
-pub struct IterMut<'a> {
-    inner: std::iter::Flatten<IterBytes<'a>>,
-}
-
-struct IterBytes<'a> {
-    bytes: std::slice::IterMut<'a, u8>,
-    last_len: u8,
-}
-
-struct ByteIter<'a> {
-    byte: &'a Cell<u8>,
-    offset: u8,
-    max: u8,
-}
-
-impl<'a> Iterator for IterMut<'a> {
-    type Item = BitProxy<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-    }
-}
-
-impl<'a> DoubleEndedIterator for IterMut<'a> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.inner.next_back()
-    }
-}
-
-impl<'a> Iterator for IterBytes<'a> {
-    type Item = ByteIter<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let byte = self.bytes.next()?;
-
-        let max = if self.bytes.size_hint().0 == 0 {
-            // if last
-            std::mem::replace(&mut self.last_len, 8)
-        } else {
-            8
-        };
-
-        Some(ByteIter {
-            byte: Cell::from_mut(byte),
-            offset: 0,
-            max,
-        })
-    }
-}
-
-impl DoubleEndedIterator for IterBytes<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        let byte = self.bytes.next_back()?;
-
-        let max = std::mem::replace(&mut self.last_len, 8);
-
-        Some(ByteIter {
-            byte: Cell::from_mut(byte),
-            offset: 0,
-            max,
-        })
-    }
-}
-
-impl<'a> Iterator for ByteIter<'a> {
-    type Item = BitProxy<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let offset = self.offset;
-
-        if offset < self.max {
-            let value = BitVec::get_bit(self.byte.get(), offset);
-            self.offset += 1;
-
-            Some(BitProxy {
-                slot: self.byte,
-                offset,
-                value,
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl<'a> DoubleEndedIterator for ByteIter<'a> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.offset < self.max {
-            self.max -= 1;
-            let value = BitVec::get_bit(self.byte.get(), self.max);
-
-            Some(BitProxy {
-                slot: self.byte,
-                offset: self.max,
-                value,
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl std::iter::FusedIterator for IterMut<'_> {}
 pub struct IntoIter {
     vec: BitVec,
     index: usize,
@@ -487,7 +274,7 @@ impl IntoIterator for BitVec {
 
 impl<'a> IntoIterator for &'a BitVec {
     type Item = bool;
-    type IntoIter = Iter<'a>;
+    type IntoIter = slice::Iter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -496,7 +283,7 @@ impl<'a> IntoIterator for &'a BitVec {
 
 impl<'a> IntoIterator for &'a mut BitVec {
     type Item = BitProxy<'a>;
-    type IntoIter = IterMut<'a>;
+    type IntoIter = slice::IterMut<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
