@@ -140,7 +140,7 @@ mod bit_vec;
 use bit_vec::BitVec;
 
 use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Bound, Deref, DerefMut, RangeBounds};
 
 /// # Safety
 ///
@@ -151,6 +151,22 @@ unsafe fn unreachable_unchecked() -> ! {
 
     debug_assert!(false, "unreachable");
     unreachable_unchecked()
+}
+
+fn as_range<R: RangeBounds<usize>>(range: &R, len: usize) -> (usize, usize) {
+    let start = match range.start_bound() {
+        Bound::Unbounded => 0,
+        Bound::Included(&x) => x,
+        Bound::Excluded(&x) => x + 1,
+    };
+
+    let end = match range.end_bound() {
+        Bound::Unbounded => len,
+        Bound::Included(&x) => x + 1,
+        Bound::Excluded(&x) => x,
+    };
+
+    (start, end)
 }
 
 trait UnwrapUnchecked {
@@ -538,14 +554,21 @@ impl<T> VecOption<T> {
     ///
     /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
     #[cfg(feature = "nightly")]
-    pub fn try_fold<A, R: std::ops::Try<Ok = A>, F: FnMut(A, usize, &mut Option<T>) -> R>(
+    pub fn try_fold<Range: RangeBounds<usize>, A, R: std::ops::Try<Ok = A>, F: FnMut(A, usize, &mut Option<T>) -> R>(
         &mut self,
+        range: Range,
         mut init: A,
         mut f: F,
-    ) -> R {
-        for (i, (data_slot, mut flag_slot)) in
-            self.data.iter_mut().zip(self.flag.iter_mut()).enumerate()
-        {
+    ) -> R
+    where
+        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
+    {
+        let (start, end) = as_range(&range, self.len());
+
+        let data = self.data[range].iter_mut().enumerate();
+        let flag = self.flag.iter_mut().take(end).skip(start);
+
+        for ((i, data_slot), mut flag_slot) in data.zip(flag) {
             let flag_slot: &mut bool = &mut flag_slot;
 
             let data = std::mem::replace(data_slot, MaybeUninit::uninit());
@@ -574,14 +597,27 @@ impl<T> VecOption<T> {
     ///
     /// This is similar to `Iterator::try_fold`
     #[cfg(not(feature = "nightly"))]
-    pub fn try_fold<A, B, F: FnMut(A, usize, &mut Option<T>) -> Result<A, B>>(
+    pub fn try_fold<
+        Range: RangeBounds<usize>,
+        A,
+        B,
+        F: FnMut(A, usize, &mut Option<T>) -> Result<A, B>,
+    >(
         &mut self,
+        range: Range,
         mut init: A,
         mut f: F,
-    ) -> Result<A, B> {
-        for (i, (data_slot, mut flag_slot)) in
-            self.data.iter_mut().zip(self.flag.iter_mut()).enumerate()
-        {
+    ) -> Result<A, B>
+    where
+        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
+    {
+        let (start, end) = as_range(&range, self.len());
+
+        let data = self.data[range].iter_mut().enumerate();
+        let flag = self.flag.iter_mut().take(end).skip(start);
+
+        for ((i, data_slot), mut flag_slot) in data.zip(flag) {
+            let i = i + start;
             let flag_slot: &mut bool = &mut flag_slot;
 
             let data = std::mem::replace(data_slot, MaybeUninit::uninit());
@@ -608,8 +644,16 @@ impl<T> VecOption<T> {
     /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
     ///
     /// This is similar to `Iterator::fold`
-    pub fn fold<A, F: FnMut(A, usize, &mut Option<T>) -> A>(&mut self, init: A, mut f: F) -> A {
-        let ret = self.try_fold(init, move |a, i, x| {
+    pub fn fold<Range: RangeBounds<usize>, A, F: FnMut(A, usize, &mut Option<T>) -> A>(
+        &mut self,
+        range: Range,
+        init: A,
+        mut f: F,
+    ) -> A
+    where
+        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
+    {
+        let ret = self.try_fold(range, init, move |a, i, x| {
             Ok::<_, std::convert::Infallible>(f(a, i, x))
         });
 
@@ -626,11 +670,19 @@ impl<T> VecOption<T> {
     ///
     /// This is similar to `Iterator::try_for_each`
     #[cfg(feature = "nightly")]
-    pub fn try_for_each<R: std::ops::Try<Ok = ()>, F: FnMut(usize, &mut Option<T>) -> R>(
+    pub fn try_for_each<
+        Range: RangeBounds<usize>,
+        R: std::ops::Try<Ok = ()>,
+        F: FnMut(usize, &mut Option<T>) -> R,
+    >(
         &mut self,
+        range: Range,
         mut f: F,
-    ) -> R {
-        self.try_fold((), move |(), i, x| f(i, x))
+    ) -> R
+    where
+        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
+    {
+        self.try_fold(range, (), move |(), i, x| f(i, x))
     }
 
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
@@ -640,11 +692,19 @@ impl<T> VecOption<T> {
     ///
     /// This is similar to `Iterator::try_for_each`
     #[cfg(not(feature = "nightly"))]
-    pub fn try_for_each<B, F: FnMut(usize, &mut Option<T>) -> Result<(), B>>(
+    pub fn try_for_each<
+        Range: RangeBounds<usize>,
+        B,
+        F: FnMut(usize, &mut Option<T>) -> Result<(), B>,
+    >(
         &mut self,
+        range: Range,
         mut f: F,
-    ) -> Result<(), B> {
-        self.try_fold((), move |(), i, x| f(i, x))
+    ) -> Result<(), B>
+    where
+        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
+    {
+        self.try_fold(range, (), move |(), i, x| f(i, x))
     }
 
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one
@@ -652,8 +712,14 @@ impl<T> VecOption<T> {
     /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
     ///
     /// This is similar to `Iterator::for_each`
-    pub fn for_each<F: FnMut(usize, &mut Option<T>)>(&mut self, mut f: F) {
-        self.fold((), move |(), i, x| f(i, x))
+    pub fn for_each<Range: RangeBounds<usize>, F: FnMut(usize, &mut Option<T>)>(
+        &mut self,
+        range: Range,
+        mut f: F,
+    ) where
+        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
+    {
+        self.fold(range, (), move |(), i, x| f(i, x))
     }
 }
 
@@ -1088,7 +1154,7 @@ fn test() {
 
     vec.extend(0..10);
 
-    vec.for_each(|_, opt| {
+    vec.for_each(.., |_, opt| {
         if let Some(ref mut x) = *opt {
             if *x % 2 == 0 {
                 *opt = None
@@ -1115,7 +1181,7 @@ fn test() {
     );
 
     let mut counter = 0;
-    vec.for_each(|_, opt| {
+    vec.for_each(.., |_, opt| {
         if let Some(ref mut x) = *opt {
             if *x % 3 == 0 {
                 *x /= 2
@@ -1136,6 +1202,34 @@ fn test() {
             Some(2),
             Some(3),
             Some(3),
+            None,
+            Some(4),
+            None,
+            Some(5),
+            Some(9)
+        ]
+    );
+    
+    let val = vec.try_fold(2..6, 0, |acc, _, opt| {
+        let res = opt.map(|x| {
+            acc + x
+        }).ok_or(acc);
+
+        *opt = None;
+
+        res
+    });
+
+    assert_eq!(val, Err(8));
+
+    assert_eq!(
+        vec,
+        [
+            Some(1),
+            None,
+            None,
+            None,
+            None,
             None,
             Some(4),
             None,
