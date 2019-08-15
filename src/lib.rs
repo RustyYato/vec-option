@@ -9,7 +9,7 @@ A space optimized version of `Vec<Option<T>>` that stores the discriminant seper
 
 ## Feature flags
 
-`nightly` - This turns on a few optimizations (makes `Clone`ing `Copy` elements much cheaper) and extends `try_fold` and `try_for_each` to work with all `Try` types.
+`nightly` - This turns on a few optimizations (makes `Clone`ing `Copy` elements much cheaper) and extends `try_fold` and `try_for_each` to work with all `Try` types. Finally, this also allows the `iterator.nth_back(n)` methods to be used.
 
 ## Pros
 
@@ -29,6 +29,7 @@ A space optimized version of `Vec<Option<T>>` that stores the discriminant seper
 Just like a normal vector, you can push and pop elements from the end of the vector
 
 ```rust
+# use vec_option::VecOption;
 let mut vec = VecOption::new();
 
 vec.push(10);
@@ -52,16 +53,18 @@ assert_eq!(vec, []);
 You can get elements from the vector
 
 ```rust
+# use vec_option::VecOption;
 let mut vec = VecOption::from(vec![0, 1, 2, 3, 4]);
-
-assert_eq!(vec.get(2), Some(Some(&2)));
-assert_eq!(vec.get_mut(4), Some(Some(&mut 4)));
+assert_eq!(vec.len(), 5);
+assert_eq!(vec, [Some(0), Some(1), Some(2), Some(3), Some(4)]);
+// assert_eq!(vec.get(2), Some(Some(&2)));
+// assert_eq!(vec.get_mut(4), Some(Some(&mut 4)));
 assert_eq!(vec.get(5), None);
 ```
 
 You can swap and replace elements
 
-```rust
+```rust ignore
 vec.swap(2, 1);
 
 assert_eq!(vec, [Some(0), Some(2), Some(1), Some(3), Some(4)]);
@@ -74,7 +77,7 @@ assert_eq!(vec, [Some(0), Some(10), Some(1), None, Some(4)]);
 
 or if `vec.replace(index, None)` is too much, you can do
 
-```rust
+```rust ignore
 assert_eq!(vec.take(1), Some(Some(10)));
 
 assert_eq!(vec, [Some(0), None, Some(1), None, Some(4)]);
@@ -83,13 +86,14 @@ assert_eq!(vec, [Some(0), None, Some(1), None, Some(4)]);
 Of course, you can also truncate or clear the vector
 
 ```rust
+# use vec_option::VecOption;
 let mut vec = VecOption::from(vec![0, 1, 3, 4]);
 
 assert_eq!(vec.len(), 4);
 
 vec.truncate(2);
 
-assert_eq!(vec, [0, 1]);
+assert_eq!(vec, [Some(0), Some(1)]);
 
 vec.clear();
 
@@ -100,18 +104,9 @@ But due to the limitations imposed by spliting the representation of the vector,
 `&Option<T>`/`&mut Option<T>` outside of a closure.
 In fact, you can't get an `&Option<T>` at all, it would be fairly useless, as the only thing you can really do with it is convert it to a `Option<&T>`. But `&mut Option<T>` is usefull, so there are a handful of functions that allow you to operate with them.
 
-```rust
-// This one allows you to edit a single value however you want, and the updates will
-// be reflected once the closure returns. If the closure panics, then it is as if you took the
-// option out of the vector.
-vec.with_mut(index, |element: &mut Option<T>| {
-    ...
-});
-```
-
 These functions below are like the corrosponding functions in `Iterator`, they iterate over the vector and allow you to do stuff based on which one you call. The only difference is that you get to operate on `&mut Option<T>` directly. Again, if the closure panics, it will be as if you took the value out of the vector.
 
-```rust
+```rust ignore
 vec.try_fold(...);
 
 vec.fold(...);
@@ -124,13 +119,14 @@ vec.for_each(...);
 But because of these limitations, you can very quickly fill up your vector with `None` and set all of the elements in your vector to `None`! This can compile down to just a `memset` if your types don't have drop glue!
 
 ```rust
+# use vec_option::VecOption;
 let mut vec = VecOption::from(vec![0, 1, 2, 3, 4]);
 
-assert_eq!(vec, [Some(0), Some(2), Some(1), Some(3), Some(4)]);
+assert_eq!(vec, [Some(0), Some(1), Some(2), Some(3), Some(4)]);
 
 vec.extend_none(5);
 
-assert_eq!(vec, [Some(0), Some(2), Some(1), Some(3), Some(4), None, None, None, None, None]);
+assert_eq!(vec, [Some(0), Some(1), Some(2), Some(3), Some(4), None, None, None, None, None]);
 
 vec.set_all_none();
 
@@ -138,10 +134,13 @@ assert_eq!(vec, [None, None, None, None, None, None, None, None, None, None]);
 ```
 */
 
+mod bit_vec;
+// use bit_vec as bit_vec;
 
 use bit_vec::BitVec;
 
 use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
 
 /// # Safety
 ///
@@ -173,18 +172,6 @@ impl<T> UnwrapUnchecked for Option<T> {
         }
     }
 }
-trait GetUnchecked {
-    /// # Safety
-    ///
-    /// `i` must be in bounds
-    unsafe fn get_unchecked(&self, i: usize) -> bool;
-}
-
-impl GetUnchecked for BitVec {
-    unsafe fn get_unchecked(&self, i: usize) -> bool {
-        self.get(i).unwrap_unchecked()
-    }
-}
 
 /// # Safety
 ///
@@ -204,19 +191,6 @@ unsafe fn from_raw_parts<T>(flag: bool, data: MaybeUninit<T>) -> Option<T> {
 /// The flag must corrospond to the data
 ///
 /// i.e. if flag is true, then data must be initialized
-unsafe fn ref_mut_from_raw_parts<T>(flag: bool, data: &mut MaybeUninit<T>) -> Option<&mut T> {
-    if flag {
-        Some(&mut *data.as_mut_ptr())
-    } else {
-        None
-    }
-}
-
-/// # Safety
-///
-/// The flag must corrospond to the data
-///
-/// i.e. if flag is true, then data must be initialized
 unsafe fn ref_from_raw_parts<T>(flag: bool, data: &MaybeUninit<T>) -> Option<&T> {
     if flag {
         Some(&*data.as_ptr())
@@ -226,16 +200,16 @@ unsafe fn ref_from_raw_parts<T>(flag: bool, data: &MaybeUninit<T>) -> Option<&T>
 }
 
 /// A space optimized version of `Vec<Option<T>>` that stores the discriminant seperately
-/// 
+///
 /// See crate-level docs for more information
-/// 
+///
 pub struct VecOption<T> {
     data: Vec<MaybeUninit<T>>,
     flag: BitVec,
 }
 
 /// The capacity information of the given `VecOption<T>`
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CapacityInfo {
     /// The capacity of the data vector that holds `T`s
     pub data: usize,
@@ -243,12 +217,64 @@ pub struct CapacityInfo {
     /// The capacity of the `BitVec` that holds the discriminants
     pub flag: usize,
 
-    _priv: ()
+    _priv: (),
 }
 
 impl<T> Default for VecOption<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A proxy to a mutable reference to an option in a `VecOption<T>`
+///
+/// If this `OptionProxy` is leaked, then the option in the `VecOption<T>` will be set to `None`
+/// and the old value of that element will be leaked
+///
+/// This serves as a way to access the option directly, and will update the `VecOption<T>` on drop
+pub struct OptionProxy<'a, T> {
+    data: &'a mut MaybeUninit<T>,
+    flag: bit_vec::BitProxy<'a>,
+    value: Option<T>,
+}
+
+impl<'a, T> OptionProxy<'a, T> {
+    unsafe fn new(mut flag: bit_vec::BitProxy<'a>, data: &'a mut MaybeUninit<T>) -> Self {
+        let data_v = std::mem::replace(data, MaybeUninit::uninit());
+        let flag_v = std::mem::replace(&mut *flag, false);
+
+        flag.flush();
+
+        let value = from_raw_parts(flag_v, data_v);
+
+        Self { data, flag, value }
+    }
+}
+
+impl<T> Deref for OptionProxy<'_, T> {
+    type Target = Option<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<T> DerefMut for OptionProxy<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl<T> Drop for OptionProxy<'_, T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            // data_slot is valid and contains uninitialized memory
+            // so do not drop it, but it is valid to write to
+            unsafe {
+                self.data.as_mut_ptr().write(value);
+                *self.flag = true;
+            }
+        }
     }
 }
 
@@ -262,7 +288,7 @@ impl<T> VecOption<T> {
     }
 
     /// Creates an empty vector
-    /// 
+    ///
     /// allocates at least `cap` elements of space
     pub fn with_capacity(cap: usize) -> Self {
         Self {
@@ -272,7 +298,7 @@ impl<T> VecOption<T> {
     }
 
     /// reserves at least `amount` elements
-    /// 
+    ///
     /// if there is already enough space, this does nothing
     pub fn reserve(&mut self, amount: usize) {
         self.data.reserve(amount);
@@ -280,7 +306,7 @@ impl<T> VecOption<T> {
     }
 
     /// reserves exactly `amount` elements
-    /// 
+    ///
     /// if there is already enough space, this does nothing
     pub fn reserve_exact(&mut self, amount: usize) {
         self.data.reserve_exact(amount);
@@ -291,23 +317,23 @@ impl<T> VecOption<T> {
     pub fn len(&self) -> usize {
         self.data.len()
     }
-    
+
     /// The capacity of the vector
     pub fn capacity(&self) -> CapacityInfo {
         CapacityInfo {
             data: self.data.capacity(),
-            flag: self.flag.capacity(),
-            _priv: ()
+            flag: self.flag.alloc_info().cap,
+            _priv: (),
         }
     }
-    
+
     /// Is this vector empty
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
-    
+
     /// Put a value at the end of the vector
-    /// 
+    ///
     /// Reallocates if there is not enough space
     pub fn push<V: Into<Option<T>>>(&mut self, value: V) {
         let value = value.into();
@@ -325,7 +351,7 @@ impl<T> VecOption<T> {
     }
 
     /// Remove the last element of the vector
-    /// 
+    ///
     /// returns `None` if the vector is empty
     pub fn pop(&mut self) -> Option<Option<T>> {
         unsafe {
@@ -341,10 +367,10 @@ impl<T> VecOption<T> {
         }
     }
 
-    /// Returns a mutable reference to the element at `index` or None if out of bounds.
-    pub fn get_mut(&mut self, index: usize) -> Option<Option<&mut T>> {
+    /// Returns a proxy to a mutable reference to the element at `index` or None if out of bounds.
+    pub fn get_mut(&mut self, index: usize) -> Option<OptionProxy<'_, T>> {
         unsafe {
-            let flag = self.flag.get(index)?;
+            let flag = self.flag.get_mut(index)?;
 
             // This is safe because flag pop does the necessary checks to make sure that
             // there are more elements
@@ -352,7 +378,7 @@ impl<T> VecOption<T> {
             let data = self.data.get_unchecked_mut(index);
 
             // The flag and data are a pair, (same index)
-            Some(ref_mut_from_raw_parts(flag, data))
+            Some(OptionProxy::new(flag, data))
         }
     }
 
@@ -371,35 +397,6 @@ impl<T> VecOption<T> {
         }
     }
 
-    /// Yields a mutable reference to the `Option` to the closure, and updates the value in the vector
-    /// once the closure completes, if the closure panics, the element will be in the `None` state
-    pub fn with_mut<F: FnOnce(&mut Option<T>) -> R, R>(&mut self, index: usize, f: F) -> Option<R> {
-        unsafe {
-            let flag = self.flag.get(index)?;
-            
-            // index was checked with flag
-            let data_slot = self.data.get_unchecked_mut(index);
-
-            self.flag.set(index, false);
-
-            let data = std::mem::replace(data_slot, MaybeUninit::uninit());
-
-            // flag and data are a pair (same index)
-            let mut opt = from_raw_parts(flag, data);
-
-            let ret = f(&mut opt);
-
-            if let Some(value) = opt {
-                // data_slot is valid and contains uninitialized memory
-                // so do not drop it, but it is valid to write to
-                data_slot.as_mut_ptr().write(value);
-                self.flag.set(index, true);
-            }
-
-            Some(ret)
-        }
-    }
-
     /// Swaps two elements of the vector, panics if either index is out of bounds
     pub fn swap(&mut self, a: usize, b: usize) {
         self.data.swap(a, b);
@@ -415,7 +412,7 @@ impl<T> VecOption<T> {
     }
 
     /// Returns the element at `index` or None if out of bounds.
-    /// 
+    ///
     /// Replaces the element at `index` with None.
     pub fn take(&mut self, index: usize) -> Option<Option<T>> {
         self.replace(index, None)
@@ -454,7 +451,7 @@ impl<T> VecOption<T> {
     }
 
     /// Reduces the length of the vector to `len` and drops all excess elements
-    /// 
+    ///
     /// If `len` is greater than the length of the vector, nothing happens
     pub fn truncate(&mut self, len: usize) {
         if self.data.len() <= len {
@@ -500,7 +497,7 @@ impl<T> VecOption<T> {
                 }
             }
         } else {
-            self.flag.clear()
+            self.flag.set_all(false);
         }
     }
 
@@ -519,7 +516,7 @@ impl<T> VecOption<T> {
             self.data.set_len(len + additional);
         }
     }
-    
+
     /// returns an iterator over references to the elements in the vector
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
@@ -532,23 +529,27 @@ impl<T> VecOption<T> {
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             data: self.data.iter_mut(),
-            flag: self.flag.iter(),
+            flag: self.flag.iter_mut(),
         }
     }
 
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
     /// the closure short-circuits, then iteration ends
-    /// 
+    ///
     /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
     #[cfg(feature = "nightly")]
-    pub fn try_fold<A, R: std::ops::Try<Ok = A>, F: FnMut(A, usize, &mut Option<T>) -> R>(&mut self, mut init: A, mut f: F) -> R {
-        for (i, data_slot) in self.data.iter_mut().enumerate() {
-            // index corrosponds to the index of a data, so it is valid
-            let flag = unsafe { self.flag.get_unchecked(i) };
-
-            self.flag.set(i, false);
+    pub fn try_fold<A, R: std::ops::Try<Ok = A>, F: FnMut(A, usize, &mut Option<T>) -> R>(
+        &mut self,
+        mut init: A,
+        mut f: F,
+    ) -> R {
+        for (i, (data_slot, mut flag_slot)) in
+            self.data.iter_mut().zip(self.flag.iter_mut()).enumerate()
+        {
+            let flag_slot: &mut bool = &mut flag_slot;
 
             let data = std::mem::replace(data_slot, MaybeUninit::uninit());
+            let flag = std::mem::replace(flag_slot, false);
 
             // The flag and data are a pair, (same index)
             let mut opt = unsafe { from_raw_parts(flag, data) };
@@ -557,7 +558,7 @@ impl<T> VecOption<T> {
 
             if let Some(value) = opt {
                 *data_slot = MaybeUninit::new(value);
-                self.flag.set(i, true);
+                *flag_slot = true;
             }
 
             init = res?;
@@ -565,22 +566,26 @@ impl<T> VecOption<T> {
 
         R::from_ok(init)
     }
-    
+
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
     /// the closure returns `Err(..)`, then iteration ends
-    /// 
+    ///
     /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
-    /// 
+    ///
     /// This is similar to `Iterator::try_fold`
     #[cfg(not(feature = "nightly"))]
-    pub fn try_fold<A, B, F: FnMut(A, usize, &mut Option<T>) -> Result<A, B>>(&mut self, mut init: A, mut f: F) -> Result<A, B> {
-        for (i, data_slot) in self.data.iter_mut().enumerate() {
-            // index corrosponds to the index of a data, so it is valid
-            let flag = unsafe { self.flag.get_unchecked(i) };
-
-            self.flag.set(i, false);
+    pub fn try_fold<A, B, F: FnMut(A, usize, &mut Option<T>) -> Result<A, B>>(
+        &mut self,
+        mut init: A,
+        mut f: F,
+    ) -> Result<A, B> {
+        for (i, (data_slot, mut flag_slot)) in
+            self.data.iter_mut().zip(self.flag.iter_mut()).enumerate()
+        {
+            let flag_slot: &mut bool = &mut flag_slot;
 
             let data = std::mem::replace(data_slot, MaybeUninit::uninit());
+            let flag = std::mem::replace(flag_slot, false);
 
             // The flag and data are a pair, (same index)
             let mut opt = unsafe { from_raw_parts(flag, data) };
@@ -589,7 +594,7 @@ impl<T> VecOption<T> {
 
             if let Some(value) = opt {
                 *data_slot = MaybeUninit::new(value);
-                self.flag.set(i, true);
+                *flag_slot = true;
             }
 
             init = res?;
@@ -599,45 +604,53 @@ impl<T> VecOption<T> {
     }
 
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one
-    /// 
+    ///
     /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
-    /// 
+    ///
     /// This is similar to `Iterator::fold`
     pub fn fold<A, F: FnMut(A, usize, &mut Option<T>) -> A>(&mut self, init: A, mut f: F) -> A {
-        let ret = self.try_fold(init, move |a, i, x| Ok::<_, std::convert::Infallible>(f(a, i, x)));
+        let ret = self.try_fold(init, move |a, i, x| {
+            Ok::<_, std::convert::Infallible>(f(a, i, x))
+        });
 
         match ret {
             Ok(x) => x,
-            Err(x) => match x {}
+            Err(x) => match x {},
         }
     }
-    
+
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
     /// the closure short-circuits, then iteration ends
-    /// 
+    ///
     /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
-    /// 
+    ///
     /// This is similar to `Iterator::try_for_each`
     #[cfg(feature = "nightly")]
-    pub fn try_for_each<R: std::ops::Try<Ok = ()>, F: FnMut(usize, &mut Option<T>) -> R>(&mut self, mut f: F) -> R {
+    pub fn try_for_each<R: std::ops::Try<Ok = ()>, F: FnMut(usize, &mut Option<T>) -> R>(
+        &mut self,
+        mut f: F,
+    ) -> R {
         self.try_fold((), move |(), i, x| f(i, x))
     }
 
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
     /// the closure returns `Err(..)`, then iteration ends
-    /// 
+    ///
     /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
-    /// 
+    ///
     /// This is similar to `Iterator::try_for_each`
     #[cfg(not(feature = "nightly"))]
-    pub fn try_for_each<B, F: FnMut(usize, &mut Option<T>) -> Result<(), B>>(&mut self, mut f: F) -> Result<(), B> {
+    pub fn try_for_each<B, F: FnMut(usize, &mut Option<T>) -> Result<(), B>>(
+        &mut self,
+        mut f: F,
+    ) -> Result<(), B> {
         self.try_fold((), move |(), i, x| f(i, x))
     }
 
     /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one
-    /// 
+    ///
     /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
-    /// 
+    ///
     /// This is similar to `Iterator::for_each`
     pub fn for_each<F: FnMut(usize, &mut Option<T>)>(&mut self, mut f: F) {
         self.fold((), move |(), i, x| f(i, x))
@@ -661,7 +674,7 @@ impl<T: Clone> Clone for VecOption<T> {
     default fn clone(&self) -> Self {
         clone_impl(self)
     }
-    
+
     #[cfg(not(feature = "nightly"))]
     fn clone(&self) -> Self {
         clone_impl(self)
@@ -840,6 +853,7 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
         }
     }
 
+    #[cfg(feature = "nightly")]
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         if std::mem::needs_drop::<T>() {
             for _ in 1..n {
@@ -863,18 +877,18 @@ impl<T> std::iter::FusedIterator for IntoIter<T> {}
 /// This struct is created by the `iter_mut` method on `VecOption`
 pub struct IterMut<'a, T> {
     data: std::slice::IterMut<'a, MaybeUninit<T>>,
-    flag: bit_vec::Iter<'a>,
+    flag: bit_vec::IterMut<'a>,
 }
 
 impl<'a, T> Iterator for IterMut<'a, T> {
-    type Item = Option<&'a mut T>;
+    type Item = OptionProxy<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         unsafe {
             let flag = self.flag.next()?;
             let data = self.data.next().unwrap_unchecked();
 
-            Some(ref_mut_from_raw_parts(flag, data))
+            Some(OptionProxy::new(flag, data))
         }
     }
 
@@ -887,7 +901,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
             let data = self.data.nth(n)?;
             let flag = self.flag.nth(n).unwrap_unchecked();
 
-            Some(ref_mut_from_raw_parts(flag, data))
+            Some(OptionProxy::new(flag, data))
         }
     }
 }
@@ -898,16 +912,17 @@ impl<T> DoubleEndedIterator for IterMut<'_, T> {
             let flag = self.flag.next_back()?;
             let data = self.data.next_back().unwrap_unchecked();
 
-            Some(ref_mut_from_raw_parts(flag, data))
+            Some(OptionProxy::new(flag, data))
         }
     }
 
+    #[cfg(feature = "nightly")]
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         unsafe {
             let data = self.data.nth_back(n)?;
             let flag = self.flag.nth_back(n).unwrap_unchecked();
 
-            Some(ref_mut_from_raw_parts(flag, data))
+            Some(OptionProxy::new(flag, data))
         }
     }
 }
@@ -954,6 +969,7 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
         }
     }
 
+    #[cfg(feature = "nightly")]
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         unsafe {
             let data = self.data.nth_back(n)?;
@@ -980,7 +996,7 @@ impl<T> IntoIterator for VecOption<T> {
 }
 
 impl<'a, T> IntoIterator for &'a mut VecOption<T> {
-    type Item = Option<&'a mut T>;
+    type Item = OptionProxy<'a, T>;
     type IntoIter = IterMut<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -1082,8 +1098,22 @@ fn test() {
         }
     });
 
-    assert_eq!(vec, [None, Some(2), None, Some(6), None, Some(10), None, Some(14), None, Some(18)]);
-    
+    assert_eq!(
+        vec,
+        [
+            None,
+            Some(2),
+            None,
+            Some(6),
+            None,
+            Some(10),
+            None,
+            Some(14),
+            None,
+            Some(18)
+        ]
+    );
+
     let mut counter = 0;
     vec.for_each(|_, opt| {
         if let Some(ref mut x) = *opt {
@@ -1098,5 +1128,19 @@ fn test() {
         }
     });
 
-    assert_eq!(vec, [Some(1), None, Some(2), Some(3), Some(3), None, Some(4), None, Some(5), Some(9)]);
+    assert_eq!(
+        vec,
+        [
+            Some(1),
+            None,
+            Some(2),
+            Some(3),
+            Some(3),
+            None,
+            Some(4),
+            None,
+            Some(5),
+            Some(9)
+        ]
+    );
 }

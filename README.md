@@ -4,7 +4,7 @@ A space optimized version of `Vec<Option<T>>` that stores the discriminant seper
 
 ## Feature flags
 
-`nightly` - This turns on a few optimizations (makes `Clone`ing `Copy` elements much cheaper) and extends `try_fold` and `try_for_each` to work with all `Try` types.
+`nightly` - This turns on a few optimizations (makes `Clone`ing `Copy` elements much cheaper) and extends `try_fold` and `try_for_each` to work with all `Try` types. Finally, this also allows the `iterator.nth_back(n)` methods to be used.
 
 ## Pros
 
