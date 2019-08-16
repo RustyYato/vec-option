@@ -1,4 +1,5 @@
-use super::{BitProxy, BitVec, index_to_slot, get_bit, set_bit};
+use super::{get_bit, index_to_slot, set_bit, BitProxy, BitVec};
+pub(super) use crate::slice::{Seal, SliceIndex, SliceIndexMut};
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -73,8 +74,16 @@ impl<'a> BitSlice<'a> {
             ptr: NonNull::dangling(),
             offset: 0,
             len: 0,
-            lt: PhantomData
+            lt: PhantomData,
         }
+    }
+
+    pub const fn len(self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
     }
 
     pub unsafe fn get_unchecked<I: SliceIndex<Self>>(self, index: I) -> I::Output {
@@ -95,9 +104,7 @@ impl<'a> BitSlice<'a> {
 
     pub fn split_at(self, index: usize) -> Option<(Self, Self)> {
         if index <= self.len {
-            unsafe {
-                Some(self.split_at_unchecked(index))
-            }
+            unsafe { Some(self.split_at_unchecked(index)) }
         } else {
             None
         }
@@ -106,9 +113,7 @@ impl<'a> BitSlice<'a> {
     pub fn split_first(self) -> Option<(bool, Self)> {
         let (first, rest) = self.split_at(1)?;
 
-        let first = unsafe {
-            first.get_unchecked(0)
-        };
+        let first = unsafe { first.get_unchecked(0) };
 
         Some((first, rest))
     }
@@ -119,31 +124,23 @@ impl<'a> BitSlice<'a> {
         unsafe {
             let (rest, last) = self.split_at_unchecked(len);
 
-            let last = last.get_unchecked(0);
-
-            Some((rest, last))
+            Some((rest, last.get_unchecked(0)))
         }
     }
 
     pub unsafe fn split_at_unchecked(self, index: usize) -> (Self, Self) {
         let BitSlice {
+            ptr, len, offset, ..
+        } = self.get_unchecked(index..);
+
+        let right = BitSlice {
             ptr,
             len,
             offset,
-            ..
-        } = self.get_unchecked(index..);
-
-
-        let right = BitSlice {
-            ptr, len, offset, lt: PhantomData
+            lt: PhantomData,
         };
-        
-        (
-            BitSlice {
-                len: index, ..self
-            },
-            right
-        )
+
+        (BitSlice { len: index, ..self }, right)
     }
 }
 
@@ -154,7 +151,7 @@ impl<'a> BitSliceMut<'a> {
             ptr: NonNull::dangling(),
             offset: 0,
             len: 0,
-            lt: PhantomData
+            lt: PhantomData,
         }
     }
 
@@ -164,7 +161,7 @@ impl<'a> BitSliceMut<'a> {
             ptr: NonNull::dangling(),
             offset: 0,
             len: 0,
-            lt: PhantomData
+            lt: PhantomData,
         }
     }
 
@@ -175,12 +172,18 @@ impl<'a> BitSliceMut<'a> {
     pub fn into_get_mut<I: SliceIndexMut<Self>>(self, index: I) -> Option<I::Output> {
         index.get_mut(self)
     }
-    
-    pub unsafe fn get_unchecked_mut<'b, I: SliceIndexMut<BitSliceMut<'b>>>(&'b mut self, index: I) -> I::Output {
+
+    pub unsafe fn get_unchecked_mut<'b, I: SliceIndexMut<BitSliceMut<'b>>>(
+        &'b mut self,
+        index: I,
+    ) -> I::Output {
         index.get_unchecked_mut(self.as_mut())
     }
 
-    pub fn get_mut<'b, I: SliceIndexMut<BitSliceMut<'b>>>(&'b mut self, index: I) -> Option<I::Output> {
+    pub fn get_mut<'b, I: SliceIndexMut<BitSliceMut<'b>>>(
+        &'b mut self,
+        index: I,
+    ) -> Option<I::Output> {
         index.get_mut(self.as_mut())
     }
 
@@ -190,9 +193,7 @@ impl<'a> BitSliceMut<'a> {
 
     pub fn split_at_mut(self, index: usize) -> Result<(Self, Self), Self> {
         if index <= self.len {
-            unsafe {
-                Ok(self.split_at_mut_unchecked(index))
-            }
+            unsafe { Ok(self.split_at_mut_unchecked(index)) }
         } else {
             Err(self)
         }
@@ -201,9 +202,7 @@ impl<'a> BitSliceMut<'a> {
     pub fn split_first_mut(self) -> Result<(BitProxy<'a>, Self), Self> {
         let (first, rest) = self.split_at_mut(1)?;
 
-        let first = unsafe {
-            first.into_get_unchecked_mut(0)
-        };
+        let first = unsafe { first.into_get_unchecked_mut(0) };
 
         Ok((first, rest))
     }
@@ -211,7 +210,7 @@ impl<'a> BitSliceMut<'a> {
     pub fn split_last_mut(self) -> Result<(Self, BitProxy<'a>), Self> {
         let len = match self.len.checked_sub(1) {
             Some(len) => len,
-            None => return Err(self)
+            None => return Err(self),
         };
 
         unsafe {
@@ -225,23 +224,17 @@ impl<'a> BitSliceMut<'a> {
 
     pub unsafe fn split_at_mut_unchecked(mut self, index: usize) -> (Self, Self) {
         let BitSliceMut {
+            ptr, len, offset, ..
+        } = self.get_unchecked_mut(index..);
+
+        let right = BitSliceMut {
             ptr,
             len,
             offset,
-            ..
-        } = self.get_unchecked_mut(index..);
-
-
-        let right = BitSliceMut {
-            ptr, len, offset, lt: PhantomData
+            lt: PhantomData,
         };
-        
-        (
-            BitSliceMut {
-                len: index, ..self
-            },
-            right
-        )
+
+        (BitSliceMut { len: index, ..self }, right)
     }
 
     pub fn set(&mut self, index: usize, value: bool) {
@@ -259,7 +252,7 @@ impl<'a> BitSliceMut<'a> {
 
         let (blocks, last) = index_to_slot(self.offset as usize + self.len);
         let ptr = self.ptr.as_ptr();
-        
+
         let (ptr, blocks) = if self.offset == 0 {
             (ptr, blocks)
         } else {
@@ -268,7 +261,7 @@ impl<'a> BitSliceMut<'a> {
                 for i in self.offset..8 {
                     set_bit(&mut *ptr, i, value);
                 }
-                
+
                 (ptr.add(1), blocks - 1)
             }
         };
@@ -306,43 +299,21 @@ impl<'a> Deref for BitSliceMut<'a> {
     }
 }
 
-pub trait Seal<S> {}
-
-pub trait SliceIndex<S>: Seal<S> {
-    type Output;
-
-    unsafe fn get_unchecked(self, slice: S) -> Self::Output;
-
-    fn get(self, slice: S) -> Option<Self::Output>;
-}
-
-pub trait SliceIndexMut<S>: Seal<S> {
-    type Output;
-
-    unsafe fn get_unchecked_mut(self, slice: S) -> Self::Output;
-
-    fn get_mut(self, slice: S) -> Option<Self::Output>;
-}
-
 impl Seal<BitSlice<'_>> for usize {}
 
 impl<'a> SliceIndex<BitSlice<'a>> for usize {
     type Output = bool;
 
-    unsafe fn get_unchecked(self, slice: BitSlice<'_>) -> bool {
+    fn check(&self, slice: &BitSlice<'a>) -> bool {
+        *self < slice.len
+    }
+
+    unsafe fn get_unchecked(self, slice: BitSlice<'_>) -> Self::Output {
         let (slot, offset) = index_to_slot(self + slice.offset as usize);
 
         let slot = *slice.ptr.as_ptr().add(slot);
 
         get_bit(slot, offset)
-    }
-
-    fn get(self, slice: BitSlice<'a>) -> Option<bool> {
-        if self < slice.len {
-            unsafe { Some(self.get_unchecked(slice)) }
-        } else {
-            None
-        }
     }
 }
 
@@ -351,7 +322,11 @@ impl Seal<BitSliceMut<'_>> for usize {}
 impl<'a> SliceIndexMut<BitSliceMut<'a>> for usize {
     type Output = BitProxy<'a>;
 
-    unsafe fn get_unchecked_mut(self, slice: BitSliceMut) -> BitProxy {
+    fn check_mut(&self, slice: &BitSliceMut) -> bool {
+        *self < slice.len
+    }
+
+    unsafe fn get_unchecked_mut(self, slice: BitSliceMut<'a>) -> Self::Output {
         let (slot, offset) = index_to_slot(self + slice.offset as usize);
 
         let slot = slice.ptr.as_ptr().add(slot);
@@ -364,14 +339,6 @@ impl<'a> SliceIndexMut<BitSliceMut<'a>> for usize {
             value,
         }
     }
-
-    fn get_mut(self, slice: BitSliceMut) -> Option<BitProxy> {
-        if self < slice.len {
-            unsafe { Some(self.get_unchecked_mut(slice)) }
-        } else {
-            None
-        }
-    }
 }
 
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
@@ -381,12 +348,12 @@ impl Seal<BitSlice<'_>> for RangeFull {}
 impl<'a> SliceIndex<BitSlice<'a>> for RangeFull {
     type Output = BitSlice<'a>;
 
-    unsafe fn get_unchecked(self, slice: BitSlice) -> BitSlice {
-        slice
+    fn check(&self, _: &BitSlice) -> bool {
+        true
     }
 
-    fn get(self, slice: BitSlice) -> Option<BitSlice> {
-        Some(slice)
+    unsafe fn get_unchecked(self, slice: BitSlice<'a>) -> Self::Output {
+        slice
     }
 }
 
@@ -395,12 +362,12 @@ impl Seal<BitSliceMut<'_>> for RangeFull {}
 impl<'a> SliceIndexMut<BitSliceMut<'a>> for RangeFull {
     type Output = BitSliceMut<'a>;
 
-    unsafe fn get_unchecked_mut(self, slice: BitSliceMut) -> BitSliceMut {
-        slice
+    fn check_mut(&self, _: &BitSliceMut) -> bool {
+        true
     }
 
-    fn get_mut(self, slice: BitSliceMut) -> Option<BitSliceMut> {
-        Some(slice)
+    unsafe fn get_unchecked_mut(self, slice: BitSliceMut<'a>) -> Self::Output {
+        slice
     }
 }
 
@@ -409,20 +376,16 @@ impl Seal<BitSlice<'_>> for RangeTo<usize> {}
 impl<'a> SliceIndex<BitSlice<'a>> for RangeTo<usize> {
     type Output = BitSlice<'a>;
 
-    unsafe fn get_unchecked(self, slice: BitSlice) -> BitSlice {
+    fn check(&self, slice: &BitSlice) -> bool {
+        self.end <= slice.len
+    }
+
+    unsafe fn get_unchecked(self, slice: BitSlice<'a>) -> Self::Output {
         debug_assert!(self.end <= slice.len);
 
         BitSlice {
             len: self.end,
             ..slice
-        }
-    }
-
-    fn get(self, slice: BitSlice) -> Option<BitSlice> {
-        if self.end <= slice.len {
-            unsafe { Some(self.get_unchecked(slice)) }
-        } else {
-            None
         }
     }
 }
@@ -432,20 +395,16 @@ impl Seal<BitSliceMut<'_>> for RangeTo<usize> {}
 impl<'a> SliceIndexMut<BitSliceMut<'a>> for RangeTo<usize> {
     type Output = BitSliceMut<'a>;
 
-    unsafe fn get_unchecked_mut(self, slice: BitSliceMut) -> BitSliceMut {
+    fn check_mut(&self, slice: &BitSliceMut) -> bool {
+        self.end <= slice.len
+    }
+
+    unsafe fn get_unchecked_mut(self, slice: BitSliceMut<'a>) -> Self::Output {
         debug_assert!(self.end <= slice.len);
 
         BitSliceMut {
             len: self.end,
             ..slice
-        }
-    }
-
-    fn get_mut(self, slice: BitSliceMut) -> Option<BitSliceMut> {
-        if self.end <= slice.len {
-            unsafe { Some(self.get_unchecked_mut(slice)) }
-        } else {
-            None
         }
     }
 }
@@ -455,20 +414,16 @@ impl Seal<BitSlice<'_>> for RangeToInclusive<usize> {}
 impl<'a> SliceIndex<BitSlice<'a>> for RangeToInclusive<usize> {
     type Output = BitSlice<'a>;
 
-    unsafe fn get_unchecked(self, slice: BitSlice) -> BitSlice {
+    fn check(&self, slice: &BitSlice) -> bool {
+        self.end < slice.len
+    }
+
+    unsafe fn get_unchecked(self, slice: BitSlice<'a>) -> Self::Output {
         debug_assert!(self.end < slice.len);
 
         BitSlice {
             len: self.end + 1,
             ..slice
-        }
-    }
-
-    fn get(self, slice: BitSlice) -> Option<BitSlice> {
-        if self.end < slice.len {
-            unsafe { Some(self.get_unchecked(slice)) }
-        } else {
-            None
         }
     }
 }
@@ -478,20 +433,16 @@ impl Seal<BitSliceMut<'_>> for RangeToInclusive<usize> {}
 impl<'a> SliceIndexMut<BitSliceMut<'a>> for RangeToInclusive<usize> {
     type Output = BitSliceMut<'a>;
 
-    unsafe fn get_unchecked_mut(self, slice: BitSliceMut) -> BitSliceMut {
+    fn check_mut(&self, slice: &BitSliceMut) -> bool {
+        self.end < slice.len
+    }
+
+    unsafe fn get_unchecked_mut(self, slice: BitSliceMut<'a>) -> Self::Output {
         debug_assert!(self.end < slice.len);
 
         BitSliceMut {
             len: self.end + 1,
             ..slice
-        }
-    }
-
-    fn get_mut(self, slice: BitSliceMut) -> Option<BitSliceMut> {
-        if self.end < slice.len {
-            unsafe { Some(self.get_unchecked_mut(slice)) }
-        } else {
-            None
         }
     }
 }
@@ -501,7 +452,11 @@ impl Seal<BitSlice<'_>> for RangeFrom<usize> {}
 impl<'a> SliceIndex<BitSlice<'a>> for RangeFrom<usize> {
     type Output = BitSlice<'a>;
 
-    unsafe fn get_unchecked(self, slice: BitSlice) -> BitSlice {
+    fn check(&self, slice: &BitSlice) -> bool {
+        self.start <= slice.len
+    }
+
+    unsafe fn get_unchecked(self, slice: BitSlice<'a>) -> Self::Output {
         debug_assert!(self.start <= slice.len);
 
         let index = slice.offset as usize + self.start;
@@ -515,14 +470,6 @@ impl<'a> SliceIndex<BitSlice<'a>> for RangeFrom<usize> {
             lt: PhantomData,
         }
     }
-
-    fn get(self, slice: BitSlice) -> Option<BitSlice> {
-        if self.start <= slice.len {
-            unsafe { Some(self.get_unchecked(slice)) }
-        } else {
-            None
-        }
-    }
 }
 
 impl Seal<BitSliceMut<'_>> for RangeFrom<usize> {}
@@ -530,7 +477,11 @@ impl Seal<BitSliceMut<'_>> for RangeFrom<usize> {}
 impl<'a> SliceIndexMut<BitSliceMut<'a>> for RangeFrom<usize> {
     type Output = BitSliceMut<'a>;
 
-    unsafe fn get_unchecked_mut(self, slice: BitSliceMut) -> BitSliceMut {
+    fn check_mut(&self, slice: &BitSliceMut) -> bool {
+        self.start <= slice.len
+    }
+
+    unsafe fn get_unchecked_mut(self, slice: BitSliceMut<'a>) -> Self::Output {
         debug_assert!(self.start <= slice.len);
 
         let index = slice.offset as usize + self.start;
@@ -544,14 +495,6 @@ impl<'a> SliceIndexMut<BitSliceMut<'a>> for RangeFrom<usize> {
             lt: PhantomData,
         }
     }
-
-    fn get_mut(self, slice: BitSliceMut) -> Option<BitSliceMut> {
-        if self.start <= slice.len {
-            unsafe { Some(self.get_unchecked_mut(slice)) }
-        } else {
-            None
-        }
-    }
 }
 
 impl Seal<BitSlice<'_>> for Range<usize> {}
@@ -559,12 +502,12 @@ impl Seal<BitSlice<'_>> for Range<usize> {}
 impl<'a> SliceIndex<BitSlice<'a>> for Range<usize> {
     type Output = BitSlice<'a>;
 
-    unsafe fn get_unchecked(self, slice: BitSlice) -> BitSlice {
-        slice.get_unchecked(..self.end).get_unchecked(self.start..)
+    fn check(&self, slice: &BitSlice) -> bool {
+        self.start < self.end && self.end <= slice.len
     }
 
-    fn get(self, slice: BitSlice) -> Option<BitSlice> {
-        slice.get(..self.end)?.get(self.start..)
+    unsafe fn get_unchecked(self, slice: BitSlice<'a>) -> Self::Output {
+        slice.get_unchecked(..self.end).get_unchecked(self.start..)
     }
 }
 
@@ -573,14 +516,14 @@ impl Seal<BitSliceMut<'_>> for Range<usize> {}
 impl<'a> SliceIndexMut<BitSliceMut<'a>> for Range<usize> {
     type Output = BitSliceMut<'a>;
 
-    unsafe fn get_unchecked_mut(self, slice: BitSliceMut) -> BitSliceMut {
+    fn check_mut(&self, slice: &BitSliceMut) -> bool {
+        self.start < self.end && self.end <= slice.len
+    }
+
+    unsafe fn get_unchecked_mut(self, slice: BitSliceMut<'a>) -> Self::Output {
         slice
             .into_get_unchecked_mut(..self.end)
             .into_get_unchecked_mut(self.start..)
-    }
-
-    fn get_mut(self, slice: BitSliceMut) -> Option<BitSliceMut> {
-        slice.into_get_mut(..self.end)?.into_get_mut(self.start..)
     }
 }
 
@@ -589,12 +532,14 @@ impl Seal<BitSlice<'_>> for RangeInclusive<usize> {}
 impl<'a> SliceIndex<BitSlice<'a>> for RangeInclusive<usize> {
     type Output = BitSlice<'a>;
 
-    unsafe fn get_unchecked(self, slice: BitSlice) -> BitSlice {
-        slice.get_unchecked(..=*self.end()).get_unchecked(*self.start()..)
+    fn check(&self, slice: &BitSlice) -> bool {
+        self.start() <= self.end() && *self.end() <= slice.len
     }
 
-    fn get(self, slice: BitSlice) -> Option<BitSlice> {
-        slice.get(..=*self.end())?.get(*self.start()..)
+    unsafe fn get_unchecked(self, slice: BitSlice<'a>) -> Self::Output {
+        slice
+            .get_unchecked(..=*self.end())
+            .get_unchecked(*self.start()..)
     }
 }
 
@@ -603,14 +548,14 @@ impl Seal<BitSliceMut<'_>> for RangeInclusive<usize> {}
 impl<'a> SliceIndexMut<BitSliceMut<'a>> for RangeInclusive<usize> {
     type Output = BitSliceMut<'a>;
 
-    unsafe fn get_unchecked_mut(self, slice: BitSliceMut) -> BitSliceMut {
+    fn check_mut(&self, slice: &BitSliceMut) -> bool {
+        self.start() <= self.end() && *self.end() <= slice.len
+    }
+
+    unsafe fn get_unchecked_mut(self, slice: BitSliceMut<'a>) -> Self::Output {
         slice
             .into_get_unchecked_mut(..=*self.end())
             .into_get_unchecked_mut(*self.start()..)
-    }
-
-    fn get_mut(self, slice: BitSliceMut) -> Option<BitSliceMut> {
-        slice.into_get_mut(..=*self.end())?.into_get_mut(*self.start()..)
     }
 }
 
@@ -636,7 +581,7 @@ impl<'a> Iter<'a> {
     pub fn into_slice(self) -> BitSlice<'a> {
         self.slice
     }
-    
+
     pub fn as_slice(&self) -> BitSlice<'_> {
         self.slice.as_ref()
     }
@@ -677,10 +622,8 @@ impl<'a> DoubleEndedIterator for Iter<'a> {
     fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
         let index = self.slice.len.checked_sub(n)?;
 
-        self.slice = unsafe {
-            self.slice.get_unchecked(..index)
-        };
-        
+        self.slice = unsafe { self.slice.get_unchecked(..index) };
+
         self.next()
     }
 }
@@ -696,15 +639,15 @@ impl<'a> IterMut<'a> {
     pub fn into_slice(self) -> BitSlice<'a> {
         *self.slice
     }
-    
+
     pub fn into_slice_mut(self) -> BitSliceMut<'a> {
         self.slice
     }
-    
+
     pub fn as_slice(&self) -> BitSlice<'_> {
         self.slice.as_ref()
     }
-    
+
     pub fn as_slice_mut(&mut self) -> BitSliceMut<'_> {
         self.slice.as_mut()
     }
@@ -725,7 +668,7 @@ impl<'a> Iterator for IterMut<'a> {
 
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         let slice = std::mem::replace(&mut self.slice, Default::default());
-        
+
         self.slice = slice.into_get_mut(n..)?;
 
         self.next()
@@ -752,11 +695,9 @@ impl<'a> DoubleEndedIterator for IterMut<'a> {
         let slice = std::mem::replace(&mut self.slice, Default::default());
 
         let index = slice.len.checked_sub(n)?;
-        
-        self.slice = unsafe {
-            slice.into_get_unchecked_mut(..index)
-        };
-        
+
+        self.slice = unsafe { slice.into_get_unchecked_mut(..index) };
+
         self.next_back()
     }
 }
@@ -769,9 +710,7 @@ impl<'a> IntoIterator for BitSlice<'a> {
     type IntoIter = Iter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        Iter {
-            slice: self,
-        }
+        Iter { slice: self }
     }
 }
 
@@ -780,9 +719,7 @@ impl<'a> IntoIterator for BitSliceMut<'a> {
     type IntoIter = IterMut<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        IterMut {
-            slice: self,
-        }
+        IterMut { slice: self }
     }
 }
 
@@ -800,9 +737,6 @@ fn slice() {
 
     assert_eq!(
         a,
-        [240, 255, 255, 15 , 
-         255, 255, 255, 255,
-         255, 255, 255, 15 ,
-         240, 255, 255, 255]
+        [240, 255, 255, 15, 255, 255, 255, 255, 255, 255, 255, 15, 240, 255, 255, 255]
     );
 }

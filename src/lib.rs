@@ -1,6 +1,9 @@
-#![cfg_attr(feature = "nightly", feature(specialization, try_trait, slice_from_raw_parts, const_fn))]
+#![cfg_attr(
+    feature = "nightly",
+    feature(specialization, try_trait, slice_from_raw_parts, const_fn)
+)]
 #![allow(clippy::option_option)]
-#![forbid(missing_docs)]
+// #![forbid(missing_docs)]
 
 /*!
 # vec-option
@@ -139,7 +142,9 @@ mod bit_vec;
 use bit_vec::BitVec;
 
 use std::mem::MaybeUninit;
-use std::ops::{Bound, Deref, DerefMut, RangeBounds};
+use std::ops::{Deref, DerefMut};
+
+pub mod slice;
 
 /// # Safety
 ///
@@ -150,22 +155,6 @@ unsafe fn unreachable_unchecked() -> ! {
 
     debug_assert!(false, "unreachable");
     unreachable_unchecked()
-}
-
-fn as_range<R: RangeBounds<usize>>(range: &R, len: usize) -> (usize, usize) {
-    let start = match range.start_bound() {
-        Bound::Unbounded => 0,
-        Bound::Included(&x) => x,
-        Bound::Excluded(&x) => x + 1,
-    };
-
-    let end = match range.end_bound() {
-        Bound::Unbounded => len,
-        Bound::Included(&x) => x + 1,
-        Bound::Excluded(&x) => x,
-    };
-
-    (start, end)
 }
 
 trait UnwrapUnchecked {
@@ -196,19 +185,6 @@ impl<T> UnwrapUnchecked for Option<T> {
 unsafe fn from_raw_parts<T>(flag: bool, data: MaybeUninit<T>) -> Option<T> {
     if flag {
         Some(data.assume_init())
-    } else {
-        None
-    }
-}
-
-/// # Safety
-///
-/// The flag must corrospond to the data
-///
-/// i.e. if flag is true, then data must be initialized
-unsafe fn ref_from_raw_parts<T>(flag: bool, data: &MaybeUninit<T>) -> Option<&T> {
-    if flag {
-        Some(&*data.as_ptr())
     } else {
         None
     }
@@ -290,6 +266,12 @@ impl<T> Drop for OptionProxy<'_, T> {
                 *self.flag = true;
             }
         }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for OptionProxy<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.value.fmt(f)
     }
 }
 
@@ -383,33 +365,35 @@ impl<T> VecOption<T> {
     }
 
     /// Returns a proxy to a mutable reference to the element at `index` or None if out of bounds.
-    pub fn get_mut(&mut self, index: usize) -> Option<OptionProxy<'_, T>> {
-        unsafe {
-            let flag = self.flag.get_mut(index)?;
+    pub unsafe fn get_unchecked_mut<'a, I: slice::SliceIndexMut<slice::SliceMut<'a, T>>>(
+        &'a mut self,
+        index: I,
+    ) -> I::Output {
+        self.as_mut_slice().into_get_unchecked_mut(index)
+    }
 
-            // This is safe because flag pop does the necessary checks to make sure that
-            // there are more elements
-            // This relies on the fact that `flag.len() == data.len()`
-            let data = self.data.get_unchecked_mut(index);
-
-            // The flag and data are a pair, (same index)
-            Some(OptionProxy::new(flag, data))
-        }
+    /// Returns a proxy to a mutable reference to the element at `index` or None if out of bounds.
+    pub fn get_mut<'a, I: slice::SliceIndexMut<slice::SliceMut<'a, T>>>(
+        &'a mut self,
+        index: I,
+    ) -> Option<I::Output> {
+        self.as_mut_slice().into_get_mut(index)
     }
 
     /// Returns a reference to the element at `index` or None if out of bounds.
-    pub fn get(&self, index: usize) -> Option<Option<&T>> {
-        unsafe {
-            let flag = self.flag.get(index)?;
+    pub unsafe fn get_unchecked<'a, I: slice::SliceIndex<slice::Slice<'a, T>>>(
+        &'a self,
+        index: I,
+    ) -> I::Output {
+        self.as_slice().get_unchecked(index)
+    }
 
-            // This is safe because flag pop does the necessary checks to make sure that
-            // there are more elements
-            // This relies on the fact that `flag.len() == data.len()`
-            let data = self.data.get_unchecked(index);
-
-            // The flag and data are a pair, (same index)
-            Some(ref_from_raw_parts(flag, data))
-        }
+    /// Returns a reference to the element at `index` or None if out of bounds.
+    pub fn get<'a, I: slice::SliceIndex<slice::Slice<'a, T>>>(
+        &'a self,
+        index: I,
+    ) -> Option<I::Output> {
+        self.as_slice().get(index)
     }
 
     /// Swaps two elements of the vector, panics if either index is out of bounds
@@ -435,34 +419,7 @@ impl<T> VecOption<T> {
 
     /// Replace the element at `index` with `value`
     pub fn replace<O: Into<Option<T>>>(&mut self, index: usize, value: O) -> Option<Option<T>> {
-        unsafe {
-            let value = value.into();
-
-            let flag = self.flag.get(index)?;
-
-            // index was checked by flag.get
-            let data = self.data.get_unchecked_mut(index);
-
-            let out = if flag {
-                // flag corrosponds to data
-                Some(data.as_ptr().read())
-            } else {
-                None
-            };
-
-            match value {
-                Some(value) => {
-                    self.flag.set(index, true);
-
-                    // data is valid, use write to prevent
-                    // dropping uninitialized memory
-                    data.as_mut_ptr().write(value);
-                }
-                None => self.flag.set(index, false),
-            }
-
-            Some(out)
-        }
+        self.as_mut_slice().replace(index, value)
     }
 
     /// Reduces the length of the vector to `len` and drops all excess elements
@@ -533,192 +490,13 @@ impl<T> VecOption<T> {
     }
 
     /// returns an iterator over references to the elements in the vector
-    pub fn iter(&self) -> Iter<'_, T> {
-        Iter {
-            data: self.data.iter(),
-            flag: self.flag.iter(),
-        }
+    pub fn iter(&self) -> slice::Iter<'_, T> {
+        self.as_slice().iter()
     }
 
     /// returns an iterator over mutable references to the elements in the vector
-    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
-        IterMut {
-            data: self.data.iter_mut(),
-            flag: self.flag.iter_mut(),
-        }
-    }
-
-    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
-    /// the closure short-circuits, then iteration ends
-    ///
-    /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
-    #[cfg(feature = "nightly")]
-    pub fn try_fold<Range: RangeBounds<usize>, A, R: std::ops::Try<Ok = A>, F: FnMut(A, usize, &mut Option<T>) -> R>(
-        &mut self,
-        range: Range,
-        mut init: A,
-        mut f: F,
-    ) -> R
-    where
-        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
-    {
-        let (start, end) = as_range(&range, self.len());
-
-        let data = self.data[range].iter_mut().enumerate();
-        let flag = self.flag.iter_mut().take(end).skip(start);
-
-        for ((i, data_slot), mut flag_slot) in data.zip(flag) {
-            let flag_slot: &mut bool = &mut flag_slot;
-
-            let data = std::mem::replace(data_slot, MaybeUninit::uninit());
-            let flag = std::mem::replace(flag_slot, false);
-
-            // The flag and data are a pair, (same index)
-            let mut opt = unsafe { from_raw_parts(flag, data) };
-
-            let res = f(init, i, &mut opt);
-
-            if let Some(value) = opt {
-                *data_slot = MaybeUninit::new(value);
-                *flag_slot = true;
-            }
-
-            init = res?;
-        }
-
-        R::from_ok(init)
-    }
-
-    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
-    /// the closure returns `Err(..)`, then iteration ends
-    ///
-    /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
-    ///
-    /// This is similar to `Iterator::try_fold`
-    #[cfg(not(feature = "nightly"))]
-    pub fn try_fold<
-        Range: RangeBounds<usize>,
-        A,
-        B,
-        F: FnMut(A, usize, &mut Option<T>) -> Result<A, B>,
-    >(
-        &mut self,
-        range: Range,
-        mut init: A,
-        mut f: F,
-    ) -> Result<A, B>
-    where
-        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
-    {
-        let (start, end) = as_range(&range, self.len());
-
-        let data = self.data[range].iter_mut().enumerate();
-        let flag = self.flag.iter_mut().take(end).skip(start);
-
-        for ((i, data_slot), mut flag_slot) in data.zip(flag) {
-            let i = i + start;
-            let flag_slot: &mut bool = &mut flag_slot;
-
-            let data = std::mem::replace(data_slot, MaybeUninit::uninit());
-            let flag = std::mem::replace(flag_slot, false);
-
-            // The flag and data are a pair, (same index)
-            let mut opt = unsafe { from_raw_parts(flag, data) };
-
-            let res = f(init, i, &mut opt);
-
-            if let Some(value) = opt {
-                *data_slot = MaybeUninit::new(value);
-                *flag_slot = true;
-            }
-
-            init = res?;
-        }
-
-        Ok(init)
-    }
-
-    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one
-    ///
-    /// The closure is passed the `init`, `index`, and a mutable reference to the corrosponding element of the vector
-    ///
-    /// This is similar to `Iterator::fold`
-    pub fn fold<Range: RangeBounds<usize>, A, F: FnMut(A, usize, &mut Option<T>) -> A>(
-        &mut self,
-        range: Range,
-        init: A,
-        mut f: F,
-    ) -> A
-    where
-        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
-    {
-        let ret = self.try_fold(range, init, move |a, i, x| {
-            Ok::<_, std::convert::Infallible>(f(a, i, x))
-        });
-
-        match ret {
-            Ok(x) => x,
-            Err(x) => match x {},
-        }
-    }
-
-    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
-    /// the closure short-circuits, then iteration ends
-    ///
-    /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
-    ///
-    /// This is similar to `Iterator::try_for_each`
-    #[cfg(feature = "nightly")]
-    pub fn try_for_each<
-        Range: RangeBounds<usize>,
-        R: std::ops::Try<Ok = ()>,
-        F: FnMut(usize, &mut Option<T>) -> R,
-    >(
-        &mut self,
-        range: Range,
-        mut f: F,
-    ) -> R
-    where
-        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
-    {
-        self.try_fold(range, (), move |(), i, x| f(i, x))
-    }
-
-    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one of them until
-    /// the closure returns `Err(..)`, then iteration ends
-    ///
-    /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
-    ///
-    /// This is similar to `Iterator::try_for_each`
-    #[cfg(not(feature = "nightly"))]
-    pub fn try_for_each<
-        Range: RangeBounds<usize>,
-        B,
-        F: FnMut(usize, &mut Option<T>) -> Result<(), B>,
-    >(
-        &mut self,
-        range: Range,
-        mut f: F,
-    ) -> Result<(), B>
-    where
-        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
-    {
-        self.try_fold(range, (), move |(), i, x| f(i, x))
-    }
-
-    /// Iterates over all of the `Option<T>`s in the vector and applies the closure to each one
-    ///
-    /// The closure is passed the `index`, and a mutable reference to the corrosponding element of the vector
-    ///
-    /// This is similar to `Iterator::for_each`
-    pub fn for_each<Range: RangeBounds<usize>, F: FnMut(usize, &mut Option<T>)>(
-        &mut self,
-        range: Range,
-        mut f: F,
-    ) where
-        Range: std::slice::SliceIndex<[MaybeUninit<T>], Output = [MaybeUninit<T>]>,
-    {
-        self.fold(range, (), move |(), i, x| f(i, x))
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
+        self.as_mut_slice().iter_mut()
     }
 }
 
@@ -939,130 +717,9 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 impl<T> ExactSizeIterator for IntoIter<T> {}
 impl<T> std::iter::FusedIterator for IntoIter<T> {}
 
-/// This struct is created by the `iter_mut` method on `VecOption`
-pub struct IterMut<'a, T> {
-    data: std::slice::IterMut<'a, MaybeUninit<T>>,
-    flag: bit_vec::slice::IterMut<'a>,
-}
-
-impl<'a, T> Iterator for IterMut<'a, T> {
-    type Item = OptionProxy<'a, T>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        unsafe {
-            let flag = self.flag.next()?;
-            let data = self.data.next().unwrap_unchecked();
-
-            Some(OptionProxy::new(flag, data))
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.data.size_hint()
-    }
-
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        unsafe {
-            let data = self.data.nth(n)?;
-            let flag = self.flag.nth(n).unwrap_unchecked();
-
-            Some(OptionProxy::new(flag, data))
-        }
-    }
-}
-
-impl<T> DoubleEndedIterator for IterMut<'_, T> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        unsafe {
-            let flag = self.flag.next_back()?;
-            let data = self.data.next_back().unwrap_unchecked();
-
-            Some(OptionProxy::new(flag, data))
-        }
-    }
-
-    #[cfg(feature = "nightly")]
-    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-        unsafe {
-            let data = self.data.nth_back(n)?;
-            let flag = self.flag.nth_back(n).unwrap_unchecked();
-
-            Some(OptionProxy::new(flag, data))
-        }
-    }
-}
-
-/// This struct is created by the `iter` method on `VecOption`
-pub struct Iter<'a, T> {
-    data: std::slice::Iter<'a, MaybeUninit<T>>,
-    flag: bit_vec::slice::Iter<'a>,
-}
-
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = Option<&'a T>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        unsafe {
-            let flag = self.flag.next()?;
-            let data = self.data.next().unwrap_unchecked();
-
-            Some(ref_from_raw_parts(flag, data))
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.data.size_hint()
-    }
-
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        unsafe {
-            let data = self.data.nth(n)?;
-            let flag = self.flag.nth(n).unwrap_unchecked();
-
-            Some(ref_from_raw_parts(flag, data))
-        }
-    }
-}
-
-impl<T> DoubleEndedIterator for Iter<'_, T> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        unsafe {
-            let flag = self.flag.next_back()?;
-            let data = self.data.next_back().unwrap_unchecked();
-
-            Some(ref_from_raw_parts(flag, data))
-        }
-    }
-
-    #[cfg(feature = "nightly")]
-    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-        unsafe {
-            let data = self.data.nth_back(n)?;
-            let flag = self.flag.nth_back(n).unwrap_unchecked();
-
-            Some(ref_from_raw_parts(flag, data))
-        }
-    }
-}
-
-impl<T> ExactSizeIterator for Iter<'_, T> {}
-impl<T> std::iter::FusedIterator for Iter<'_, T> {}
-
-impl<T> IntoIterator for VecOption<T> {
-    type Item = Option<T>;
-    type IntoIter = IntoIter<T>;
-
-    fn into_iter(mut self) -> Self::IntoIter {
-        IntoIter {
-            data: std::mem::replace(&mut self.data, Vec::new()).into_iter(),
-            flag: std::mem::replace(&mut self.flag, BitVec::new()).into_iter(),
-        }
-    }
-}
-
 impl<'a, T> IntoIterator for &'a mut VecOption<T> {
     type Item = OptionProxy<'a, T>;
-    type IntoIter = IterMut<'a, T>;
+    type IntoIter = slice::IterMut<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
@@ -1071,7 +728,7 @@ impl<'a, T> IntoIterator for &'a mut VecOption<T> {
 
 impl<'a, T> IntoIterator for &'a VecOption<T> {
     type Item = Option<&'a T>;
-    type IntoIter = Iter<'a, T>;
+    type IntoIter = slice::Iter<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -1082,13 +739,7 @@ use std::fmt;
 
 impl<T: fmt::Debug> fmt::Debug for VecOption<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut f = f.debug_list();
-
-        for i in self {
-            f.entry(&i);
-        }
-
-        f.finish()
+        f.debug_list().entries(self).finish()
     }
 }
 
@@ -1153,7 +804,7 @@ fn test() {
 
     vec.extend(0..10);
 
-    vec.for_each(.., |_, opt| {
+    vec.iter_mut().for_each(|mut opt| {
         if let Some(ref mut x) = *opt {
             if *x % 2 == 0 {
                 *opt = None
@@ -1180,7 +831,7 @@ fn test() {
     );
 
     let mut counter = 0;
-    vec.for_each(.., |_, opt| {
+    vec.iter_mut().for_each(|mut opt| {
         if let Some(ref mut x) = *opt {
             if *x % 3 == 0 {
                 *x /= 2
@@ -1208,16 +859,18 @@ fn test() {
             Some(9)
         ]
     );
-    
-    let val = vec.try_fold(2..6, 0, |acc, _, opt| {
-        let res = opt.map(|x| {
-            acc + x
-        }).ok_or(acc);
 
-        *opt = None;
+    let val = vec
+        .get_mut(2..6)
+        .unwrap()
+        .iter_mut()
+        .try_fold(0, |acc, mut opt| {
+            let res = opt.map(|x| acc + x).ok_or(acc);
 
-        res
-    });
+            *opt = None;
+
+            res
+        });
 
     assert_eq!(val, Err(8));
 

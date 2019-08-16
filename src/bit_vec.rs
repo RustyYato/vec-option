@@ -131,19 +131,31 @@ impl BitVec {
         unsafe { Some(get_bit(*self.data.get_unchecked(slot), offset)) }
     }
 
-    pub fn get<'a, S: slice::SliceIndex<slice::BitSlice<'a>>>(&'a self, index: S) -> Option<S::Output> {
+    pub fn get<'a, S: slice::SliceIndex<slice::BitSlice<'a>>>(
+        &'a self,
+        index: S,
+    ) -> Option<S::Output> {
         self.as_slice().get(index)
     }
 
-    pub unsafe fn get_unchecked<'a, S: slice::SliceIndex<slice::BitSlice<'a>>>(&'a self, index: S) -> S::Output {
+    pub unsafe fn get_unchecked<'a, S: slice::SliceIndex<slice::BitSlice<'a>>>(
+        &'a self,
+        index: S,
+    ) -> S::Output {
         self.as_slice().get_unchecked(index)
     }
 
-    pub fn get_mut<'a, S: slice::SliceIndexMut<slice::BitSliceMut<'a>>>(&'a mut self, index: S) -> Option<S::Output> {
+    pub fn get_mut<'a, S: slice::SliceIndexMut<slice::BitSliceMut<'a>>>(
+        &'a mut self,
+        index: S,
+    ) -> Option<S::Output> {
         self.as_mut_slice().into_get_mut(index)
     }
 
-    pub unsafe fn get_unchecked_mut<'a, S: slice::SliceIndexMut<slice::BitSliceMut<'a>>>(&'a mut self, index: S) -> S::Output {
+    pub unsafe fn get_unchecked_mut<'a, S: slice::SliceIndexMut<slice::BitSliceMut<'a>>>(
+        &'a mut self,
+        index: S,
+    ) -> S::Output {
         self.as_mut_slice().into_get_unchecked_mut(index)
     }
 
